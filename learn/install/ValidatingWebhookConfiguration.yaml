@@ -1,0 +1,89 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  annotations:
+    cert-manager.io/inject-ca-from: kserve/serving-cert
+  creationTimestamp: null
+  name: inferencegraph.serving.kserve.io
+webhooks:
+  - admissionReviewVersions:
+      - v1beta1
+    clientConfig:
+      caBundle: Cg==
+      service:
+        name: kserve-webhook-server-service
+        namespace: kserve
+        path: /validate-serving-kserve-io-v1alpha1-inferencegraph
+    failurePolicy: Fail
+    name: inferencegraph.kserve-webhook-server.validator
+    rules:
+      - apiGroups:
+          - serving.kserve.io
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - inferencegraphs
+    sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  annotations:
+    cert-manager.io/inject-ca-from: kserve/serving-cert
+  creationTimestamp: null
+  name: inferenceservice.serving.kserve.io
+webhooks:
+  - admissionReviewVersions:
+      - v1beta1
+    clientConfig:
+      caBundle: Cg==
+      service:
+        name: kserve-webhook-server-service
+        namespace: kserve
+        path: /validate-serving-kserve-io-v1beta1-inferenceservice
+    failurePolicy: Fail
+    name: inferenceservice.kserve-webhook-server.validator
+    rules:
+      - apiGroups:
+          - serving.kserve.io
+        apiVersions:
+          - v1beta1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - inferenceservices
+    sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  annotations:
+    cert-manager.io/inject-ca-from: kserve/serving-cert
+  creationTimestamp: null
+  name: trainedmodel.serving.kserve.io
+webhooks:
+  - admissionReviewVersions:
+      - v1beta1
+    clientConfig:
+      caBundle: Cg==
+      service:
+        name: kserve-webhook-server-service
+        namespace: kserve
+        path: /validate-serving-kserve-io-v1alpha1-trainedmodel
+    failurePolicy: Fail
+    name: trainedmodel.kserve-webhook-server.validator
+    rules:
+      - apiGroups:
+          - serving.kserve.io
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - trainedmodels
+    sideEffects: None
