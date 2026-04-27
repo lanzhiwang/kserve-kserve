@@ -10,7 +10,6 @@ $ tree -a .github/workflows
 ├── kserve-llmisvc-controller-docker-publish.yml
 ├── kserve-localmodel-agent-docker-publish.yml
 ├── kserve-localmodel-controller-docker-publish.yml
-├── learn-docker-publish.md
 ├── lightgbm-docker-publish.yml
 ├── paddle-docker-publish.yml
 ├── pmml-docker-publish.yml
@@ -46,7 +45,7 @@ $ tree -a .github/workflows
 ├── scheduled-image-scan.yml
 └── required-checks.yml
 
-1 directory, 40 files
+1 directory, 39 files
 $
 ```
 
