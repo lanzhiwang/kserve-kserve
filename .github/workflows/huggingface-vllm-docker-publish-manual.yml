@@ -1,55 +1,75 @@
+# 工作流名称: 手动发布 Huggingface vLLM 镜像
 name: Huggingface vLLM Docker Publisher
 
 on:
+  # 手动触发配置
   workflow_dispatch:
     inputs:
+      # 手动执行时需要输入的参数: 版本号(例如 0.1.2)
       version:
         description: "Huggingface vLLM image version to publish"
         required: true
 
 env:
+  # 基础镜像名称变量
   IMAGE_NAME: huggingfaceserver
 
+# 并发策略: 如果同一个分支重复触发, 取消正在进行的任务, 防止资源竞争和镜像覆盖
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   push:
+    # 策略配置: 利用矩阵同时处理多个变体
     strategy:
+      # 即使 CPU 版本构建失败, GPU 版本也要继续构建
       fail-fast: false
       matrix:
         image:
+          # 定义 CPU 版本的参数
           - version: ${{ inputs.version }}
             path: "python/huggingface_server_cpu.Dockerfile"
+          # 定义 GPU 版本的参数(版本号自动带上 -gpu 后缀)
           - version: ${{ inputs.version }}-gpu
             path: "python/huggingface_server.Dockerfile"
+
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
 
+      # 调用本地自定义 Action: 清理磁盘空间
+      # 深度学习镜像(尤其是包含 vLLM 和 CUDA 的)通常非常庞大(10GB+), 清理磁盘是必须的
       - name: Free-up disk space
         uses: ./.github/actions/free-up-disk-space
 
+      # 初始化 Docker Buildx, 支持更高级的构建特性(如缓存、多平台等)
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
           cache-binary: true
 
+      # 登录到 DockerHub 官方镜像仓库
       - name: Login to DockerHub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USER }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      # 动态生成并规范化环境变量
       - name: Export image id and version variable
         run: |
+          # 定义镜像全名 (例如 kserve/huggingfaceserver)
           IMAGE_ID=kserve/$IMAGE_NAME
 
+          # 转换为全小写(Docker 规范要求)
           # Change all uppercase to lowercase
           IMAGE_ID=$(echo $IMAGE_ID | tr '[A-Z]' '[a-z]')
 
+          # 强制版本号以 'v' 开头(例如输入 0.15.0 会变成 v0.15.0)
+          # 这是为了保证发布产物的命名一致性
           # Add prefix v to version if it doesn't start with v
           if [[ ${{ matrix.image.version }} != v* ]]; then
             VERSION="v${{ matrix.image.version }}"
@@ -57,17 +77,23 @@ jobs:
             VERSION="${{ matrix.image.version }}"
           fi
 
+          # 写入环境变量以便后续步骤引用
           echo IMAGE_ID=$IMAGE_ID >> $GITHUB_ENV
           echo VERSION=$VERSION >> $GITHUB_ENV
 
+      # 执行真正的构建与推送操作
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           platforms: linux/amd64
           context: python
+          # 根据矩阵参数动态选择 Dockerfile (CPU 或 GPU)
           file: ${{ matrix.image.path }}
           push: true
+          # 最终镜像标签格式为 IMAGE_ID:VERSION
           tags: ${{ env.IMAGE_ID }}:${{ env.VERSION }}
+          # 禁用 provenance 记录以解决某些注册表兼容性问题
           # https://github.com/docker/buildx/issues/1533
           provenance: false
+          # 生成 SBOM (软件物料清单), 增强供应链安全性
           sbom: true

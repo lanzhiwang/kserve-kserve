@@ -1,11 +1,11 @@
 ```bash
 $ tree -a .github/workflows
 .github/workflows
-├── agent-docker-publish.yml
-├── artexplainer-docker-publish.yml
-├── huggingface-cpu-docker-publish.yml
-├── huggingface-docker-publish.yml.  ####################
-├── huggingface-vllm-docker-publish-manual.yml
+├── agent-docker-publish.yml  ####################
+├── artexplainer-docker-publish.yml  ####################
+├── huggingface-cpu-docker-publish.yml  ####################
+├── huggingface-docker-publish.yml  ####################
+├── huggingface-vllm-docker-publish-manual.yml  ####################
 ├── kserve-controller-docker-publish.yml
 ├── kserve-llmisvc-controller-docker-publish.yml
 ├── kserve-localmodel-agent-docker-publish.yml
@@ -264,3 +264,181 @@ jobs:
 ### 运维专家建议:
 
 该文件最后的 `sbom: true` 非常专业. 它生成了镜像的软件物料清单. 在企业级安全合规检查中, 这个功能可以帮助安全团队快速扫描镜像中包含的所有 Python 包及其版本, 从而识别已知漏洞(CVE).
+
+---
+
+这个 `huggingface-vllm-docker-publish-manual.yml` 文件是一个典型的手动发布流水线.
+它与之前自动触发的流水线不同, 主要用于在特定时间点(如 vLLM 版本更新或需要补丁镜像时), 由运维人员手动触发, 同时构建并发布 CPU 和 GPU 两个版本的 HuggingFace 模型服务器镜像.
+
+---
+
+### 1. 带有详细注释的工作流代码
+
+```yaml
+# 工作流名称: 手动发布 Huggingface vLLM 镜像
+name: Huggingface vLLM Docker Publisher
+
+on:
+  # 手动触发配置
+  workflow_dispatch:
+    inputs:
+      # 手动执行时需要输入的参数: 版本号(例如 0.1.2)
+      version:
+        description: "Huggingface vLLM image version to publish"
+        required: true
+
+env:
+  # 基础镜像名称变量
+  IMAGE_NAME: huggingfaceserver
+
+# 并发策略: 如果同一个分支重复触发, 取消正在进行的任务, 防止资源竞争和镜像覆盖
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  push:
+    # 策略配置: 利用矩阵同时处理多个变体
+    strategy:
+      # 即使 CPU 版本构建失败, GPU 版本也要继续构建
+      fail-fast: false
+      matrix:
+        image:
+          # 定义 CPU 版本的参数
+          - version: ${{ inputs.version }}
+            path: "python/huggingface_server_cpu.Dockerfile"
+          # 定义 GPU 版本的参数(版本号自动带上 -gpu 后缀)
+          - version: ${{ inputs.version }}-gpu
+            path: "python/huggingface_server.Dockerfile"
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # 调用本地自定义 Action: 清理磁盘空间
+      # 深度学习镜像(尤其是包含 vLLM 和 CUDA 的)通常非常庞大(10GB+), 清理磁盘是必须的
+      - name: Free-up disk space
+        uses: ./.github/actions/free-up-disk-space
+
+      # 初始化 Docker Buildx, 支持更高级的构建特性(如缓存、多平台等)
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          cache-binary: true
+
+      # 登录到 DockerHub 官方镜像仓库
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # 动态生成并规范化环境变量
+      - name: Export image id and version variable
+        run: |
+          # 定义镜像全名 (例如 kserve/huggingfaceserver)
+          IMAGE_ID=kserve/$IMAGE_NAME
+
+          # 转换为全小写(Docker 规范要求)
+          # Change all uppercase to lowercase
+          IMAGE_ID=$(echo $IMAGE_ID | tr '[A-Z]' '[a-z]')
+
+          # 强制版本号以 'v' 开头(例如输入 0.15.0 会变成 v0.15.0)
+          # 这是为了保证发布产物的命名一致性
+          # Add prefix v to version if it doesn't start with v
+          if [[ ${{ matrix.image.version }} != v* ]]; then
+            VERSION="v${{ matrix.image.version }}"
+          else
+            VERSION="${{ matrix.image.version }}"
+          fi
+
+          # 写入环境变量以便后续步骤引用
+          echo IMAGE_ID=$IMAGE_ID >> $GITHUB_ENV
+          echo VERSION=$VERSION >> $GITHUB_ENV
+
+      # 执行真正的构建与推送操作
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          platforms: linux/amd64
+          context: python
+          # 根据矩阵参数动态选择 Dockerfile (CPU 或 GPU)
+          file: ${{ matrix.image.path }}
+          push: true
+          # 最终镜像标签格式为 IMAGE_ID:VERSION
+          tags: ${{ env.IMAGE_ID }}:${{ env.VERSION }}
+          # 禁用 provenance 记录以解决某些注册表兼容性问题
+          # https://github.com/docker/buildx/issues/1533
+          provenance: false
+          # 生成 SBOM (软件物料清单), 增强供应链安全性
+          sbom: true
+
+```
+
+---
+
+### 2. 核心含义深度解析
+
+1. `workflow_dispatch` (手动挡):
+
+  这是该文件的核心. 它不在代码 push 时运行, 而是给运维人员提供了一个 UI 按钮. 这在 AI 领域很常见, 因为模型服务器的镜像(特别是集成了 vLLM 的)体积巨大且构建极慢, 通常不希望每次小代码改动都触发完整构建, 而是在准备好发布 Release Candidate 时手动触发.
+
+2. `strategy.matrix` (矩阵并行):
+
+  这里定义了一个包含两个对象的矩阵. GitHub 会自动派生出两个独立的任务:
+
+    * 任务 A: 使用 `huggingface_server_cpu.Dockerfile`, 版本号为 `v(input)`.
+
+    * 任务 B: 使用 `huggingface_server.Dockerfile`, 版本号为 `v(input)-gpu`.
+
+    这保证了同一个版本号下的 CPU 和 GPU 镜像具有高度的逻辑一致性.
+
+3. 版本号修整 (Normalization):
+
+  脚本中使用了 `if [[ ${{ matrix.image.version }} != v* ]]`. 这是为了解决"人的因素": 无论操作员输入的是 `0.15.0` 还是 `v0.15.0`, 最终产出的镜像标签都会整齐划一地变成 `v0.15.0`.
+
+4. 磁盘空间管理 (`free-up-disk-space`):
+
+  vLLM 镜像通常包含大量的深度学习库(PyTorch, vLLM, CUDA 等). 在构建过程中, Docker 的中间层会消耗巨大空间. 如果不调用这个清理 Action, 构建任务极大概率会报错 `No space left on device`.
+
+---
+
+### 3. 使用场景
+
+作为高级运维/开发, 你会在以下场景使用此文件:
+
+* 特定组件发布: 当 KServe 的核心逻辑没变, 但 vLLM 库发布了安全补丁或性能优化时, 你需要带版本号重新发布 HuggingFace 推理镜像.
+
+* 手动补跑/修复: 如果之前的自动化构建由于网络原因失败, 或者你需要针对特定的 Git Commit 发布一个临时的调试镜像.
+
+* Release 发布流程: 在项目正式发布新版本前, 由 Release Manager 手动触发, 生成稳定版本的 CPU/GPU 镜像.
+
+---
+
+### 4. 使用方法
+
+由于这是 `workflow_dispatch` 触发, 你需要按照以下步骤操作:
+
+1. 打开 GitHub 仓库页面.
+
+2. 点击 Actions 选项卡.
+
+3. 在左侧列表中找到 "Huggingface vLLM Docker Publisher".
+
+4. 点击右侧显示的 "Run workflow" 下拉按钮.
+
+5. 在 "Huggingface vLLM image version to publish" 输入框中输入版本号(例如 `0.15.0`).
+
+6. 点击 "Run workflow" 绿色按钮.
+
+检查结果:
+
+* 在 Actions 运行详情中, 你会看到两个并行的 Job: 一个是 CPU 版本, 一个是 GPU 版本.
+
+* 构建完成后, 你可以到 DockerHub 的 `kserve/huggingfaceserver` 仓库下看到新增的两个标签: `v0.15.0` 和 `v0.15.0-gpu`.
+
+### 运维专家提示:
+
+这个脚本中的 `sbom: true` 选项非常关键. 对于 vLLM 这种复杂的依赖栈, 生成的 SBOM(软件物料清单)可以帮助你快速确认镜像中到底包含的是哪个版本的 `transformers`、`torch` 或 `vllm` 库, 这在生产环境排查 Bug 时非常有价值.

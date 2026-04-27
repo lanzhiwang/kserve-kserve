@@ -4,7 +4,7 @@ $ tree -a .github/workflows
 ├── agent-docker-publish.yml
 ├── artexplainer-docker-publish.yml
 ├── huggingface-cpu-docker-publish.yml
-├── huggingface-docker-publish.yml.  ####################
+├── huggingface-docker-publish.yml  ####################
 ├── huggingface-vllm-docker-publish-manual.yml
 ├── kserve-controller-docker-publish.yml
 ├── kserve-llmisvc-controller-docker-publish.yml

@@ -1,8 +1,10 @@
 name: E2E Tests
 
 on:
+  # 触发条件: PR 提交到主分支或发布分支
   pull_request:
     branches: [master, release*]
+    # 路径过滤: 排除文档和非核心文件, 但包含 workflow 本身和自定义 Action 的变动
     paths:
       - "**"
       - "!.github/**"
@@ -10,13 +12,19 @@ on:
       - "!**.md"
       - ".github/workflows/e2e-test.yml"
       - ".github/actions/**"
+
+  # 允许手动触发执行
   workflow_dispatch:
 
 env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  # 使用当前 Commit SHA 作为镜像标签, 确保唯一性
   TAG: ${{ github.sha }}
+  # 镜像离线包存放路径
   DOCKER_IMAGES_PATH: "/mnt/docker-images"
+  # Docker 仓库命名空间
   KO_DOCKER_REPO: "kserve"
+  # 定义 Artifact 前缀, 用于后续 Job 批量下载对应的镜像文件
   # artifact prefixes for bulk download
   PREDICTOR_ARTIFACT_PREFIX: "pred"
   EXPLAINER_ARTIFACT_PREFIX: "exp"
@@ -24,20 +32,29 @@ env:
   GRAPH_ARTIFACT_PREFIX: "graph"
   BASE_ARTIFACT_PREFIX: "base"
 
+# 并发策略: 同一分支有新提交时自动取消旧任务, 节省 GitHub 计算资源
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+
+  # ==============================================================================
+  # 第一阶段: 构建 Job (Build Stage)
+  # 这一阶段会并行启动四个 Job, 分别构建 KServe 核心组件、各种模型服务器和测试镜像
+  # ==============================================================================
+
   kserve-image-build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
 
+      # 初始化环境变量
       - name: Load KServe environment variables
         run: ./kserve-images.sh --ci
 
+      # K8s 镜像构建极占空间, 先清理磁盘
       - name: Free-up disk space
         uses: ./.github/actions/free-up-disk-space
 
@@ -54,6 +71,8 @@ jobs:
           docker image ls
           sudo ls -lh ${DOCKER_IMAGES_PATH}
 
+      # 将构建好的镜像上传为 Artifact.
+      # 注意: compression-level: 0 是为了加快上传速度
       - name: Upload controller image
         uses: actions/upload-artifact@v4
         with:
@@ -101,6 +120,8 @@ jobs:
           path: ${{ env.DOCKER_IMAGES_PATH }}/${{ env.ROUTER_IMG }}-${{ env.TAG }}
           compression-level: 0
           if-no-files-found: error
+
+  # (predictor-runtime-build 等其他构建 Job 逻辑类似, 主要负责构建 Sklearn/XGB/Huggingface 等镜像)
 
   predictor-runtime-build:
     runs-on: ubuntu-latest
@@ -278,12 +299,19 @@ jobs:
           compression-level: 0
           if-no-files-found: error
 
+  # ==============================================================================
+  # 第二阶段: 测试 Job (Test Stage)
+  # 这一阶段会根据不同的功能模块(Predictor, Graph, LLM 等)启动大量并行的测试 Job
+  # ==============================================================================
+
   test-predictor:
     runs-on: ubuntu-latest
+    # 必须等待核心镜像和运行时镜像构建完成后才能开始
     needs: [kserve-image-build, predictor-runtime-build]
     strategy:
       fail-fast: false
       matrix:
+        # 矩阵测试: 同时验证 Kustomize 和 Helm 两种安装方式下的功能是否正常
         install-method: ["kustomize", "helm"]
     steps:
       - name: Checkout
@@ -305,12 +333,15 @@ jobs:
         with:
           python-version: "3.10"
 
+      # 启动本地 K8s 集群 (Minikube)
       - name: Setup Minikube
         uses: ./.github/actions/minikube-setup
 
+      # 安装 Istio, Knative 等依赖
       - name: KServe dependency setup
         uses: ./.github/actions/kserve-dep-setup
 
+      # 核心逻辑: 下载之前 Job 构建好的离线镜像包
       - name: Download base images
         uses: ./.github/actions/base-download
 
@@ -321,6 +352,7 @@ jobs:
           pattern: ${{ env.PREDICTOR_ARTIFACT_PREFIX }}-*
           merge-multiple: true
 
+      # 将 tar 包加载进 Minikube 的 Docker 环境
       - name: Load docker images
         uses: ./.github/actions/load-docker-images
         with:
@@ -331,6 +363,7 @@ jobs:
 
       - name: Install KServe
         run: |
+          # 根据矩阵参数动态选择安装方式
           ${{ matrix.install-method == 'helm' && 'export INSTALL_METHOD="helm"' || '' }}
           ${{ matrix.install-method == 'helm' && format('export SET_KSERVE_VERSION={0}', env.TAG) || '' }}
           ./test/scripts/gh-actions/setup-kserve.sh
@@ -341,12 +374,16 @@ jobs:
       - name: Run predictor E2E tests
         timeout-minutes: 40
         run: |
+          # 执行真正的测试脚本, 指定测试范围为 "predictor"
           ./test/scripts/gh-actions/run-e2e-tests.sh "predictor" "6"
 
       - name: Check system status
+        # 无论测试成功还是失败, 都打印集群日志和状态, 便于排查问题
         if: always()
         run: |
           ./test/scripts/gh-actions/status-check.sh
+
+  # (其他测试 Job 如 test-raw, test-llm, test-graph 逻辑类似, 分别针对不同的部署模式和功能)
 
   test-transformer-explainer-mms:
     runs-on: ubuntu-latest
@@ -1285,12 +1322,15 @@ jobs:
           sudo mkdir -p /tmp-images
           sudo chown -R $USER /tmp-images
 
+      # 这个 Job 特别之处在于它模拟了真实的多节点环境
       - name: Setup Minikube
         uses: ./.github/actions/minikube-setup
         with:
           nodes: 3
           driver: "docker"
           start-args: "--mount --mount-string=/tmp-images:/tmp-images"
+
+      # (后续涉及跨节点镜像加载、节点打标签、模型缓存验证等复杂逻辑)
 
       - name: Create minikube tunnel
         run: |

@@ -2,10 +2,16 @@ name: Go Test
 
 on:
   push:
+    # 当代码推送到 master 或 release 开头的分支时触发
     branches: [master, release*]
+    # 忽略仅 Markdown 文件的变动, 节省 CI 资源
     paths-ignore:
       - "**.md"
+
   pull_request:
+    # PR 触发路径过滤:
+    # 包含所有路径, 但排除 python、docs 和 md 文件.
+    # 特别包含本 workflow 文件, 确保修改 CI 逻辑时能触发测试.
     paths:
       - "**"
       - "!python/**"
@@ -13,17 +19,22 @@ on:
       - "!docs/**"
       - "!**.md"
       - ".github/workflows/go.yml"
+
+  # 允许手动触发执行
   workflow_dispatch:
 
+# 并发控制: 如果同一分支有新的提交, 取消正在进行的旧任务
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# 权限设置: 允许工作流写入内容和 PR 评论(用于发布覆盖率报告)
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
+  # 第一个 Job: 执行测试并生成原始覆盖率数据
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -31,12 +42,14 @@ jobs:
       - name: Check out code into the Go module directory
         uses: actions/checkout@v4
 
+      # 安装 Go 环境, 版本从项目根目录的 go.mod 文件中自动读取
       - name: Set up Go 1.x
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
         id: go
 
+      # 下载项目所有依赖, 包含测试依赖
       - name: Get dependencies
         run: |
           go get -v -t -d ./...
@@ -44,18 +57,28 @@ jobs:
       - name: Test
         id: test
         run: |
+          # 设置必要的环境变量
           export GOPATH=/home/runner/go
           export PATH=$PATH:/usr/local/kubebuilder/bin:/home/runner/go/bin
+
+          # 下载 yq 工具, 用于后续可能的 YAML 处理(虽然脚本内未显式使用, 但在构建环境常见)
           wget -O $GOPATH/bin/yq https://github.com/mikefarah/yq/releases/download/v4.28.1/yq_linux_amd64
           chmod +x $GOPATH/bin/yq
+
+          # 执行 Makefile 中定义的测试指令, 通常会包含 go test -coverprofile=coverage.out
           make test
+
+          # 执行覆盖率处理脚本
           ./coverage.sh
+
+          # 提取总覆盖率百分比并设为 step 的输出变量
           echo ::set-output name=coverage::$(./coverage.sh | tr -s '\t' | cut -d$'\t' -f 3)
 
       - name: Print coverage
         run: |
           echo "Coverage output is ${{ steps.test.outputs.coverage }}"
 
+      # 将生成的覆盖率结果文件上传为 Artifact, 供下一个 Job 使用
       - name: upload cover profile artifact
         uses: actions/upload-artifact@v4
         with:
@@ -63,7 +86,9 @@ jobs:
           path: coverage.out
           if-no-files-found: error
 
+  # 第二个 Job: 检查覆盖率变化并发布报告
   check-coverage:
+    # 依赖 test 任务成功完成
     needs: test
     runs-on: ubuntu-latest
     name: Check Coverage
@@ -71,12 +96,14 @@ jobs:
       - name: checkout
         uses: actions/checkout@v4
 
+      # 下载上一个 Job 产生的覆盖率文件
       - name: Download cover profile artifact
         id: download-coverage
         uses: actions/download-artifact@v4
         with:
           name: coverage.out
 
+      # 计算当前分支的总覆盖率数值
       - name: Extract coverage percentage
         id: current-coverage
         run: |
@@ -87,6 +114,7 @@ jobs:
             echo "coverage=0" >> $GITHUB_OUTPUT
           fi
 
+      # 关键步骤: 使用第三方 Action 下载 master 分支上最近一次成功的基准覆盖率数据
       - name: download artifact (master.breakdown)
         id: download-master-breakdown
         uses: dawidd6/action-download-artifact@v9
@@ -105,6 +133,7 @@ jobs:
           name: master-coverage.out
           if_no_artifact_found: warn
 
+      # 解析 master 分支的基准覆盖率数值
       - name: Extract master coverage percentage
         id: master-coverage
         run: |
@@ -115,6 +144,7 @@ jobs:
             echo "coverage=0" >> $GITHUB_OUTPUT
           fi
 
+      # 生成完整的函数级覆盖率明细报告
       - name: Generate full coverage breakdown
         id: full_coverage_report
         run: |
@@ -127,15 +157,18 @@ jobs:
             echo "report=No coverage report found." >> $GITHUB_OUTPUT
           fi
 
+      # 使用专用的 Go 覆盖率检查工具进行比对
       - name: check test coverage
         id: coverage
         uses: vladopajic/go-test-coverage@v2
         continue-on-error: true
         with:
           config: ./.github/.testcoverage.yml
+          # 如果是 master 分支, 则更新基准文件
           breakdown-file-name: ${{ github.ref_name == 'master' && 'master.breakdown' || '' }}
           diff-base-breakdown-file-name: ${{ steps.download-master-breakdown.outputs.found_artifact == 'true' && 'master.breakdown' || '' }}
 
+      # 如果当前是 master 分支, 上传新的基准文件供后续 PR 比对使用
       - name: upload artifact (master.breakdown)
         uses: actions/upload-artifact@v4
         if: github.ref_name == 'master'
@@ -144,6 +177,7 @@ jobs:
           path: master.breakdown
           if-no-files-found: error
 
+      # 打印调试信息
       - name: Previous coverage
         run: |
           echo "Previous Coverage ${{ steps.master-coverage.outputs.coverage }}"
@@ -152,7 +186,9 @@ jobs:
         run: |
           echo "Current Coverage ${{ steps.current-coverage.outputs.coverage }}"
 
+      # 在 PR 下面自动发布对比报告
       - name: post coverage report
+        # 仅在 PR 场景下运行, 发布覆盖率上升/下降的视觉反馈
         # this has evalated permission to post back the coverage, only restricted to this step.
         if: github.event_name == 'pull_request_target'
         uses: thollander/actions-comment-pull-request@v3
@@ -163,13 +199,7 @@ jobs:
           message: |
             ## 📊 Go Test Coverage Report
 
-            ${{ 
-              steps.current-coverage.outputs.coverage > steps.master-coverage.outputs.coverage 
-              && '✅ **Overall code coverage increased.**' 
-              || steps.current-coverage.outputs.coverage < steps.master-coverage.outputs.coverage 
-              && '❌ **Overall code coverage decreased.**' 
-              || 'ℹ️ **Overall code coverage unchanged.**' 
-            }}
+            ${{ steps.current-coverage.outputs.coverage > steps.master-coverage.outputs.coverage && '✅ **Overall code coverage increased.**' || steps.current-coverage.outputs.coverage < steps.master-coverage.outputs.coverage && '❌ **Overall code coverage decreased.**' || 'ℹ️ **Overall code coverage unchanged.**' }}
 
             **🔍 Coverage Summary**
             - **Pull Request Coverage:** `${{ steps.current-coverage.outputs.coverage }}%`
@@ -184,6 +214,7 @@ jobs:
 
             </details>
 
+      # 如果是 master 分支, 持久化存储当前的 coverage.out 供下一次 PR 比对
       - name: Rename and upload master coverage
         if: github.ref_name == 'master'
         run: mv coverage.out master-coverage.out

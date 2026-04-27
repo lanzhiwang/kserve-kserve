@@ -1,11 +1,17 @@
+# 工作流名称: Python 包测试与验证
 name: Python package
 
 on:
   push:
+    # 触发条件 1: 代码推送到 master 或 release 分支
     branches: [master, release*]
     paths-ignore:
+      # 忽略文档修改
       - "**.md"
+
+  # 触发条件 2: Pull Request 变动
   pull_request:
+    # 路径过滤: 仅当 Python 代码、工作流脚本或磁盘清理脚本变动时触发
     paths:
       - "python/**"
       - "!.github/**"
@@ -13,8 +19,11 @@ on:
       - "!**.md"
       - ".github/workflows/python-test.yml"
       - ".github/actions/free-up-disk-space/**"
+
+  # 触发条件 3: 允许手动触发
   workflow_dispatch:
 
+# 并发控制: 如果同一 PR 有新提交, 自动取消旧的正在运行的任务, 节省 GitHub 算力
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -22,23 +31,30 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+
+    # 策略配置: 实现跨 Python 版本的兼容性测试矩阵
     strategy:
+      # 即使 3.10 失败, 3.11 和 3.12 也要继续跑完
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
 
+      # 关键步骤: KServe 依赖包(如 PyTorch, Paddle)体积巨大, 必须清理磁盘预装软件腾出空间
       - name: Free-up disk space
         uses: ./.github/actions/free-up-disk-space
 
       - name: Set up Python ${{ matrix.python-version }}
         id: setup-python
+        # 注: 此处通常应为 actions/setup-python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
+      # 使用现代化的 Python 包管理器 uv, 比传统 pip 快 10-100 倍
       - name: Install uv
         run: pip install uv
 
@@ -48,6 +64,7 @@ jobs:
           # source .venv/bin/activate
           # pip install --upgrade pip
 
+      # 缓存机制: 利用 GitHub Cache 存储虚拟环境, 极大缩短后续流水线执行时间
       - name: Load uv cache
         uses: actions/cache@v4
         id: cached-uv
@@ -63,7 +80,11 @@ jobs:
             uv venv .venv
           fi
 
-      # ----------------------------------------Kserve Unit Tests--------------------------------------------------------
+      # -----------------------------------------------------------------------------------------
+      # 以下是针对各个子模块的独立测试逻辑(采用相同的模式: 加载缓存 -> 安装 -> 执行 pytest)
+      # -----------------------------------------------------------------------------------------
+
+      # ----------------------------------------Kserve Unit Tests
       # load cached kserve venv if cache exists
       - name: Load cached kserve venv
         id: cached-kserve-dependencies
@@ -71,28 +92,33 @@ jobs:
         with:
           path: python/kserve/.venv
           key: kserve-venv-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/kserve/uv.lock') }}
+
       # install kserve dependencies if cache does not exist
       - name: Install kserve dependencies
         if: steps.cached-kserve-dependencies.outputs.cache-hit != 'true'
         run: |
           cd python/kserve
           make install_dependencies
+
       - name: Install kserve
         run: |
           cd python/kserve
           make dev_install
+
       - name: Test kserve
         run: |
           cd python
           source kserve/.venv/bin/activate
           pytest --cov=kserve ./kserve
+
       - name: Test kserve Storage
         run: |
           cd python
           source kserve/.venv/bin/activate
           pytest --cov=storage ./storage
 
-      # ----------------------------------------Kserve Numpy 1.x Unit Tests--------------------------------------------
+      # 2. Numpy 1.x 兼容性回归测试(非常专业的设计, 确保旧版库兼容性)
+      # ----------------------------------------Kserve Numpy 1.x Unit Tests
       - name: Setup kserve numpy 1-x directory
         run: |
           mkdir -p python/kserve-numpy-1-x
@@ -100,33 +126,38 @@ jobs:
           cd python/kserve-numpy-1-x
           # update the lock file without installing dependencies
           uv pip install "numpy<2.0"
+
       - name: Load cached kserve numpy 1-x venv
         id: cached-kserve-numpy-1-x-dependencies
         uses: actions/cache@v3
         with:
           path: python/kserve-numpy-1-x/.venv
           key: kserve-numpy-1-x-venv-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/kserve-numpy-1-x/uv.lock') }}
+
       # install kserve numpy 1-x dependencies if cache does not exist
       - name: Install kserve numpy 1-x dependencies
         if: ${{ steps.cached-kserve-numpy-1-x-dependencies.outputs.cache-hit != 'true' }}
         run: |
           cd python/kserve-numpy-1-x
           make install_dependencies
+
       - name: Install kserve numpy 1-x
         run: |
           cd python/kserve-numpy-1-x
           make dev_install
+
       - name: View numpy version
         run: |
           cd python/kserve-numpy-1-x
           uv pip show numpy
+
       - name: Test kserve numpy 1-x
         run: |
           cd python
           source kserve-numpy-1-x/.venv/bin/activate
           pytest --cov=kserve ./kserve-numpy-1-x
 
-      # ----------------------------------------Sklearn Server Unit Tests------------------------------------------------
+      # ----------------------------------------Sklearn Server Unit Tests
       # load cached sklearn venv if cache exists
       - name: Load cached sklearn venv
         id: cached-sklearn-dependencies
@@ -134,23 +165,26 @@ jobs:
         with:
           path: python/sklearnserver/.venv
           key: sklearn-venv-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/kserve/uv.lock', '**/sklearnserver/uv.lock') }}
+
         # install sklearn server dependencies if cache does not exist
       - name: Install sklearn dependencies
         if: steps.cached-sklearn-dependencies.outputs.cache-hit != 'true'
         run: |
           cd python/sklearnserver
           make install_dependencies
+
       - name: Install sklearnserver
         run: |
           cd python/sklearnserver
           make dev_install
+
       - name: Test sklearnserver
         run: |
           cd python
           source sklearnserver/.venv/bin/activate
           pytest --cov=sklearnserver ./sklearnserver
 
-      # ----------------------------------------Xgb Server Unit Tests------------------------------------------------
+      # ----------------------------------------Xgb Server Unit Tests
       # load cached xgb venv if cache exists
       - name: Load cached xgb venv
         id: cached-xgb-dependencies
@@ -158,23 +192,26 @@ jobs:
         with:
           path: python/xgbserver/.venv
           key: xgb-venv-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/kserve/uv.lock', '**/xgbserver/uv.lock') }}
+
         # install xgb server dependencies if cache does not exist
       - name: Install xgb dependencies
         if: steps.cached-xgb-dependencies.outputs.cache-hit != 'true'
         run: |
           cd python/xgbserver
           make install_dependencies
+
       - name: Install xgbserver
         run: |
           cd python/xgbserver
           make dev_install
+
       - name: Test xgbserver
         run: |
           cd python
           source xgbserver/.venv/bin/activate
           pytest --cov=xgbserver ./xgbserver
 
-      # ----------------------------------------Pmml Server Unit Tests------------------------------------------------
+      # ----------------------------------------Pmml Server Unit Tests
       # load cached pmml venv if cache exists
       - name: Load cached pmml venv
         id: cached-pmml-dependencies
@@ -182,23 +219,26 @@ jobs:
         with:
           path: python/pmmlserver/.venv
           key: pmml-venv-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/kserve/uv.lock', '**/pmmlserver/uv.lock') }}
+
         # install pmml server dependencies if cache does not exist
       - name: Install pmml dependencies
         if: steps.cached-pmml-dependencies.outputs.cache-hit != 'true'
         run: |
           cd python/pmmlserver
           make install_dependencies
+
       - name: Install pmmlserver
         run: |
           cd python/pmmlserver
           make dev_install
+
       - name: Test pmmlserver
         run: |
           cd python
           source pmmlserver/.venv/bin/activate
           pytest --cov=pmmlserver ./pmmlserver
 
-      # ----------------------------------------Lgb Server Unit Tests------------------------------------------------
+      # ----------------------------------------Lgb Server Unit Tests
       # load cached lgb venv if cache exists
       - name: Load cached lgb venv
         id: cached-lgb-dependencies
@@ -206,23 +246,26 @@ jobs:
         with:
           path: python/lgbserver/.venv
           key: lgb-venv-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/kserve/uv.lock', '**/lgbserver/uv.lock') }}
+
         # install lgb server dependencies if cache does not exist
       - name: Install lgb dependencies
         if: steps.cached-lgb-dependencies.outputs.cache-hit != 'true'
         run: |
           cd python/lgbserver
           make install_dependencies
+
       - name: Install lgbserver
         run: |
           cd python/lgbserver
           make dev_install
+
       - name: Test lgbserver
         run: |
           cd python
           source lgbserver/.venv/bin/activate
           pytest --cov=lgbserver ./lgbserver
 
-      # ----------------------------------------Paddle Server Unit Tests------------------------------------------------
+      # ----------------------------------------Paddle Server Unit Tests
       # load cached paddle venv if cache exists
       - name: Load cached paddle venv
         id: cached-paddle-dependencies
@@ -237,22 +280,26 @@ jobs:
           echo "python version ${{ steps.setup-python.outputs.python-version }}"
           cd python/paddleserver
           make install_dependencies
+
       - name: Install paddleserver
         run: |
           cd python/paddleserver
           make dev_install
+
       - name: Test paddleserver
         run: |
           cd python
           source paddleserver/.venv/bin/activate
           pytest --cov=paddleserver ./paddleserver
 
-      # ----------------------------------------Huggingface CPU Server Unit Tests------------------------------------------------
+      # Huggingface CPU Server 测试(最重型的测试项)
+      # ----------------------------------------Huggingface CPU Server Unit Tests
       # load cached huggingface cpu venv if cache exists
       - name: Load cached huggingface cpu venv
         id: huggingface-cpu-dependencies
         uses: actions/cache@v4
         with:
+          # 使用 /mnt 目录是因为这里磁盘空间更大(通过之前的 free-up-disk-space 挂载)
           path: /mnt/python/huggingfaceserver-cpu-venv
           key: huggingface-cpu-venv-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/kserve/uv.lock', '**/huggingfaceserver/uv.lock') }}
 
@@ -265,6 +312,7 @@ jobs:
 
       - name: Install build dependencies for vLLM
         run: |
+          # vLLM 等高性能库需要编译, 安装必要的编译工具链
           sudo apt-get update -y
           sudo apt-get install -y gcc-12 g++-12 libnuma-dev python3-dev
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 10 --slave /usr/bin/g++ g++ /usr/bin/g++-12
@@ -284,6 +332,7 @@ jobs:
           /mnt/python/huggingfaceserver-cpu-venv/bin/python -m pip install pytest pytest-cov
           bash tests/setup_vllm.sh
           source /mnt/python/huggingfaceserver-cpu-venv/bin/activate
+          # 排除 vllm 相关测试, 因为在没有 GPU 的 GitHub Runner 上无法完全运行 vllm 逻辑
           /mnt/python/huggingfaceserver-cpu-venv/bin/python -m pytest --cov=huggingfaceserver -vv -k 'not test_vllm'
           # TODO: The following tests need to be reworked since IPEX support is relatively new for both vLLM and KServe
           # poetry run -- pytest --cov=huggingfaceserver -vv tests/test_vllm_chat_with_reasoning.py
