@@ -1,0 +1,30 @@
+# Action 的名称, 显示在 GitHub Actions 的执行日志中
+name: "Base Download Actions"
+# 对该 Action 功能的简要描述
+description: "A wrapper around download docker artifact to download a set of base images"
+
+runs:
+  # 声明这是一个复合 Action, 允许组合使用其他 Action 和 shell 命令
+  using: "composite"
+  steps:
+    # 第一步: 从 GitHub 存储库的 Artifacts(产物库)中下载之前上传的文件
+    - name: Download base artifacts
+      uses: actions/download-artifact@v4
+      with:
+        # 指定下载到的本地临时目录
+        path: ./tmp
+        # 使用通配符匹配 Artifact 名称.
+        # 这里依赖于环境变量 BASE_ARTIFACT_PREFIX, 例如值为 "kserve-images"
+        # 那么它会匹配所有如 "kserve-images-controller", "kserve-images-agent" 的产物
+        pattern: ${{ env.BASE_ARTIFACT_PREFIX }}-*
+        # 如果匹配到多个 Artifact, 将它们的内容全部合并到 path 指定的同一个目录中
+        # 避免为每个产物创建一个子文件夹, 方便后续统一处理
+        merge-multiple: true
+
+    # 第二步: 调用项目内部的另一个本地 Action, 将下载好的镜像文件加载到 Docker 中
+    - name: Load base images
+      # 引用同目录下 actions/load-docker-images 文件夹中的 action.yaml
+      uses: ./.github/actions/load-docker-images
+      with:
+        # 告诉加载脚本去刚才下载到的 ./tmp 目录寻找镜像包(通常是 .tar 文件)
+        directory: ./tmp

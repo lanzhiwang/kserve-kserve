@@ -571,3 +571,25 @@ apidocs:
 check-doc-links:
 	@python3 hack/verify-doc-links.py && echo "$@: OK"
 
+.PHONY: print_var
+print_var:
+	@echo "LOCALBIN = $(LOCALBIN)"
+	@echo "PYTHON_VENV = $(PYTHON_VENV)"
+	@echo "PYTHON_BIN = $(PYTHON_BIN)"
+	@echo "GOLANGCI_LINT = $(GOLANGCI_LINT)"
+	@echo "CONTROLLER_GEN = $(CONTROLLER_GEN)"
+	@echo "ENVTEST = $(ENVTEST)"
+	@echo "YQ = $(YQ)"
+	@echo "HELM_DOCS = $(HELM_DOCS)"
+	@echo "BLACK_FMT = $(BLACK_FMT)"
+	@echo "UV = $(UV)"
+	@echo "RUFF = $(RUFF)"
+	@echo "BASE_IMG = $(BASE_IMG)"
+	@echo "PMML_BASE_IMG = $(PMML_BASE_IMG)"
+	@echo "CRD_OPTIONS = $(CRD_OPTIONS)"
+	@echo "KSERVE_ENABLE_SELF_SIGNED_CA = $(KSERVE_ENABLE_SELF_SIGNED_CA)"
+	@echo "ENVTEST = $(ENVTEST)"
+	@echo "ENVTEST_VERSION = $(ENVTEST_VERSION)"
+	@echo "ENVTEST_K8S_VERSION = $(ENVTEST_K8S_VERSION)"
+	@echo "ENGINE = $(ENGINE)"
+	@echo "ARCH = $(ARCH)"

@@ -1,0 +1,57 @@
+# Action 的显示名称, 在 GitHub Actions 运行记录中可见
+name: "Minikube setup action"
+# 功能描述: 在 GitHub Action 运行器(Runner)上设置并启动 minikube
+description: "Sets up minikube on the github runner"
+
+# 定义输入参数, 增强了集群部署的灵活性
+inputs:
+  # Minikube 集群启动的节点数量(支持模拟多节点集群)
+  nodes:
+    description: "Number of nodes to start minikube with"
+    required: false
+    default: "1"
+
+  # Minikube 使用的驱动程序. 在 GitHub Ubuntu Runner 上, 'none' 性能最好, 因为它直接在宿主机运行
+  driver:
+    description: "Driver to use for minikube"
+    required: false
+    default: "none"
+
+  # 传递给 minikube start 的额外自定义参数(如: --container-runtime=containerd)
+  start-args:
+    description: "Additional arguments to pass to minikube start"
+    required: false
+    default: ""
+
+runs:
+  # 声明这是一个复合 Action
+  using: "composite"
+  steps:
+    # 第一步: 安装指定版本的 kubectl 命令行工具
+    - name: Install kubectl
+      uses: azure/setup-kubectl@v4.0.0
+      with:
+        # 锁定 K8s 版本, 确保与集群版本完全匹配, 避免 API 兼容性问题
+        version: "v1.34.4"
+
+    # 第二步: 启动 Minikube
+    # 使用了社区公认最稳定的 setup-minikube action
+    - name: Setup Minikube
+      uses: medyagh/setup-minikube@latest
+      with:
+        minikube-version: "1.38.1"
+        kubernetes-version: "v1.34.4"
+        driver: ${{ inputs.driver }}
+        # wait: "all" 表示等待所有系统组件(如 apiserver, scheduler)完全 Ready 才继续
+        wait: "all"
+        cpus: "max"
+        memory: "max"
+        # --wait-timeout=6m0s: 给予足够的启动时间, 防止在资源紧张时超时
+        # --nodes: 允许根据测试需要启动多节点
+        start-args: --wait-timeout=6m0s --nodes=${{ inputs.nodes }} ${{ inputs.start-args }}
+
+    # 第三步: 冒烟测试/健康检查
+    - name: Check Kubernetes pods
+      shell: bash
+      # 打印 kube-system 命名空间下的所有 Pod, 方便在日志中确认集群是否真的健康
+      run: kubectl get pods -n kube-system

@@ -1,0 +1,40 @@
+# Action 的显示名称
+name: "Load docker images"
+# 详细描述: 从指定目录加载 tar 镜像文件并随后清理该目录
+description: "Loads docker images from the tar files in specified director and deletes the directory"
+
+# 定义输入参数
+inputs:
+  directory:
+    description: "Path to the directory which contains the tar files"
+    required: true # 必须提供包含 tar 文件的路径
+
+runs:
+  # 声明使用复合模式, 允许将多个步骤或脚本封装在一起
+  using: composite
+  steps:
+    - name: Load docker images
+      # 在复合 Action 中, 每个 run 步骤必须明确指定 shell 种类
+      shell: bash
+      run: |
+        # 1. 使用 find 命令查找指定目录下第一层级的所有文件
+        # -maxdepth 1: 只看当前目录, 不递归子目录
+        # -type f: 只查找文件
+        files=$(find ${{ inputs.directory }} -maxdepth 1 -type f)
+
+        # 2. 遍历找到的所有文件
+        for file in ${files[@]};do
+          # 打印当前正在处理的文件名, 方便在 GitHub Actions 日志中排查
+          echo "Loading image $(basename ${file})"
+
+          # 3. 执行核心命令: 将 tar 包加载回 Docker 镜像库
+          # -i (input): 指定输入文件
+          docker image load -i ${file}
+        done
+
+        # 4. 环境清理: 加载完成后删除临时目录及其中的 tar 文件
+        # 这样做是为了释放 GitHub Runner 极其宝贵的磁盘空间(通常只有 14GB 左右)
+        rm -rf ${{ inputs.directory }}
+
+        # 5. 验证环节: 列出当前系统中的所有镜像, 确保加载成功并留存日志证据
+        docker image ls

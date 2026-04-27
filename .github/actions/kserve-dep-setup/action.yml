@@ -1,0 +1,60 @@
+# Action 的名称
+name: "Kserve dependency setup action"
+# 功能描述: 在运行中的 Kubernetes 集群上安装 KServe 的依赖项
+description: "Sets up Kserve dependencies on the running kubernetes cluster"
+
+# 定义输入参数, 允许不同的测试 Workflow 定制不同的测试环境
+inputs:
+  # 要安装的网络层组件
+  network-layer:
+    description: "Network layer to install"
+    required: true
+    default: "istio"
+
+  # KServe 部署模式
+  deployment-mode:
+    # KServe 部署模式. 可选值为 serverless(基于 Knative)或 raw(标准 K8s Deployment)
+    description: "Kserve deployment mode. Supported values are serverless and raw"
+    required: false
+    default: "serverless"
+
+  # 是否启用 KEDA 用于自动扩缩容
+  enable-keda:
+    description: "Enable KEDA for autoscaling"
+    required: false
+    default: "false"
+
+  # 是否部署大模型推理服务(LLM Inference Service)控制器
+  deploy-llmisvc:
+    description: "Deploy LLM Inference Service Controller"
+    required: false
+    default: "false"
+
+runs:
+  using: "composite"
+  steps:
+    # 第一步: 调用核心脚本安装依赖
+    - name: Setup KServe dependencies
+      shell: bash
+      run: |
+        # 开启不区分大小写的模式匹配(Bash 特性)
+        shopt -s nocasematch
+
+        echo "Selected network layer ${{ inputs.network-layer }}"
+
+        # 调用项目源码中的脚本
+        ./test/scripts/gh-actions/setup-deps.sh ${{ inputs.deployment-mode }} "${{ inputs.network-layer }}" "${{ inputs.enable-keda }}" "${{ inputs.deploy-llmisvc }}"
+
+    # 第二步: 更新测试用的 Kustomize Overlays
+    - name: Update test overlays
+      shell: bash
+      run: |
+        # 运行脚本来修改 Kustomize 配置.
+        # 场景: 将 YAML 里的镜像地址替换为 CI 刚刚构建好的本地镜像, 或调整测试特定的配置项.
+        ./test/scripts/gh-actions/update-test-overlays.sh
+
+        # 打印当前镜像列表, 方便在 Action 日志中核对镜像是否已就绪
+        docker image ls
+
+        # 打印生成的推理服务配置文件, 确保 Overlay 替换逻辑正确(调试用)
+        cat ./config/overlays/test/configmap/inferenceservice.yaml
